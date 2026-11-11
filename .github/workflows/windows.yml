@@ -1,0 +1,41 @@
+name: Windows build and tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install -r requirements-build.txt
+      - run: python -m unittest discover -s tests -p "test_*.py" -v
+      - run: node tests/test_userscript.js
+      - run: node --test dsh-plugin/tests/controller.test.mjs
+      - name: Build Windows executable
+        run: python tools/build_windows.py
+      - name: Smoke standalone and plugin modes
+        run: |
+          python tests/smoke_exe.py dist/BailianHUD/BailianHUD.exe
+          python tests/smoke_exe.py dist/BailianHUD/BailianHUD.exe --plugin
+      - name: Package DSH plugin and ZCode program
+        run: python tools/package_release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BailianHUD-releases
+          path: |
+            dist/packages/*.zip
+            dist/packages/*.tgz
+            dist/packages/SHA256SUMS.txt
+          if-no-files-found: error

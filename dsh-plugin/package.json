@@ -1,0 +1,17 @@
+{
+  "name": "dsh-bailian-hud",
+  "version": "0.2.0",
+  "description": "百炼余额浮窗插件：内置引擎，随 DSH 启停，保留原有浮窗与监控面板",
+  "type": "module",
+  "main": "index.js",
+  "exports": {".": "./index.js", "./client": "./client.js", "./package.json": "./package.json"},
+  "files": ["index.js", "controller.mjs", "client.js", "cordis.patch.yml", "bin", "README.md", "LICENSE", "licenses", "docs", "install.ps1", "Install.cmd", "bss-credentials.example.json"],
+  "dsh": {
+    "bundle": {"patch": "./cordis.patch.yml"},
+    "client": {"platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-sidebar"]}
+  },
+  "scripts": {"test": "node --test tests/*.test.mjs"},
+  "license": "MIT",
+  "os": ["win32"],
+  "cpu": ["x64"]
+}

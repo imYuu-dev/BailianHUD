@@ -1,0 +1,22 @@
+# 本地凭据、数据、日志和构建产物绝不提交。
+__pycache__/
+.hud.lock
+.hud_instance.json
+.hud_instance.tmp
+*.lnk
+_migration/
+dsh-plugin/local-config.json
+*.py[cod]
+*.log
+.hud_prefs.json
+.hud_state.json
+.hud.tmp
+bailian_usage.jsonl
+bss-credentials.json
+.venv/
+build/
+dist/
+dsh-plugin/bin/
+dsh-plugin/licenses/
+*.spec
+
