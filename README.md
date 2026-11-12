@@ -58,34 +58,19 @@ AK 包含 **AccessKey ID** 和 **AccessKey Secret**，用于查询代金券。�
 
 ## 导入 AK
 
-### 3. 保存配置文件
+### 3. 粘贴并保存
 
-**先启动一次对应版本。** 打开文件资源管理器，把对应路径粘贴到地址栏，按回车。
+**DSH 插件**
 
-| 所用版本 | 数据目录 |
-| --- | --- |
-| DSH 插件 | `%USERPROFILE%\.dsh\storages\bailian-hud` |
-| ZCode 程序 | `%LOCALAPPDATA%\BailianHUD` |
+打开「插件 → dsh-bailian-hud」，粘贴 **AccessKey ID** 和 **AccessKey Secret**，点击「保存并同步」。
 
-如果提示「位置不可用」，回到第一步启动对应版本，确认浮窗或插件服务已运行，再打开目录。
+**ZCode 程序**
 
-将下载包中的 `bss-credentials.example.json` 复制到这个数据目录，重命名为 `bss-credentials.json`。右键选择「打开方式 → 记事本」，替换下面两个值后保存。
+在解压目录双击 **`Import-AK.cmd`**，按提示粘贴 ID 和 Secret，分别按回车。Secret 输入时隐藏显示，脚本会自动启动程序并保存配置。
 
-```json
-{
-  "aliyunAkId": "粘贴自己的 AccessKey ID",
-  "aliyunAkSecret": "粘贴自己的 AccessKey Secret"
-}
-```
+### 4. 确认同步
 
-保留英文双引号和逗号。在资源管理器中打开「查看 → 显示 → 文件扩展名」，确认文件名为 **`bss-credentials.json`**。用记事本另存为时，文件类型选择「所有文件」，编码选择 UTF-8。
-
-### 4. 重启并确认同步
-
-- **DSH**　在「更多 → 百炼浮窗」中点击「退出服务」，再点击「显示浮窗」。
-- **ZCode**　在托盘菜单退出程序，再运行 `BailianHUD.exe`。
-
-等待一个同步周期，默认 60 秒。双击浮窗打开监控面板，确认出现余额、「BSS 自动同步」和最近更新时间。
+保存后立即同步。DSH 配置页显示「已同步」，ZCode 脚本显示「同步成功」。双击浮窗打开监控面板，确认余额和最近更新时间。
 
 ![实际监控面板的余额与同步来源，金额为示例数据](docs/images/panel-balance.png)
 
@@ -106,8 +91,8 @@ DSH 插件随宿主启停。ZCode 程序独立运行。浮窗右键可调整跟�
 
 | 现象 | 处理 |
 | --- | --- |
-| 数据目录打不开 | 先启动一次对应版本，确认服务正常运行 |
-| 一直「待同步」 | 检查文件路径、`.json.txt` 后缀、两个 AK 字段，保存后重启 |
+| 一直「待同步」 | 在插件配置页或导入脚本中查看同步结果，检查两个 AK 是否属于同一组 |
+| 提示使用环境变量 | 当前环境变量中的 AK 优先，清除旧环境变量并重启对应程序后重新导入 |
 | `AccessDenied` / `Forbidden` | 确认查询策略已授权给创建 AK 的 RAM 用户，授权范围为整个云账号 |
 | AK 校验失败 | 检查 ID 与 Secret 是否属于同一组、AK 是否启用，以及系统时间和网络 |
 | 未找到券或券不可用 | 确认 AK 属于代金券所在账号，且该券已生效、未过期 |
@@ -128,6 +113,8 @@ ZCode 程序  http://127.0.0.1:18766/apps/anthropic
 端口冲突时自动回退。从监控面板地址栏或数据目录 `.hud_instance.json` 取得实际地址。显式使用 `--port` 时保持固定端口。退出对应服务会停止代理，停用后可将客户端恢复为原有上游地址。
 
 环境变量 `ALIYUN_AK_ID` / `ALIYUN_AK_SECRET`、`ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` 优先于文件。兼容 `%USERPROFILE%\.dsh\qwen-coupon.json`，本程序数据目录中的配置文件优先于旧配置。
+
+导入的 AK 自动保存在本机数据目录中的 `bss-credentials.json`。DSH 数据目录为 `%USERPROFILE%\.dsh\storages\bailian-hud`，ZCode 数据目录为 `%LOCALAPPDATA%\BailianHUD`。已有配置文件可继续使用。
 
 可选浏览器推送脚本位于 `extras/`。面板中的「打开阿里云卡券页并同步」用于该推送方式。使用 AK 时，程序自动轮询 BSS。
 
@@ -158,7 +145,7 @@ python tools/package_release.py
 标准插件包也可通过 CLI 安装，并在 DSH 中启用。
 
 ```powershell
-dsh plugin --profile desktop add /absolute/path/dsh-bailian-hud-0.2.0.tgz
+dsh plugin --profile desktop add /absolute/path/dsh-bailian-hud-0.3.0.tgz
 ```
 
 </details>

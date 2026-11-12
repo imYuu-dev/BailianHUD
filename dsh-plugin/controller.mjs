@@ -9,10 +9,12 @@ const pause = ms => new Promise(done => setTimeout(done, ms));
 const readJSON = async path => JSON.parse(await readFile(path, 'utf8'));
 export const allowedActions = new Set(['show', 'hide', 'toggle', 'panel', 'quit']);
 
-export function localJSON(port, path, token = '', post = false) {
+export function localJSON(port, path, token = '', post = false, body) {
   return new Promise((done, fail) => {
+    const payload = body === undefined ? '' : JSON.stringify(body);
     const req = request({hostname: '127.0.0.1', port, path, method: post ? 'POST' : 'GET',
-      headers: token ? {'X-HUD-Token': token, 'Content-Length': '0'} : {}}, response => {
+      headers: {...(token ? {'X-HUD-Token': token} : {}),
+        ...(post ? {'Content-Length': Buffer.byteLength(payload), 'Content-Type': 'application/json'} : {})}}, response => {
       let text = '';
       response.setEncoding('utf8');
       response.on('data', chunk => {
@@ -23,14 +25,18 @@ export function localJSON(port, path, token = '', post = false) {
       response.on('end', () => {
         try {
           const data = JSON.parse(text);
-          if (response.statusCode !== 200) throw new Error(`监控返回 ${response.statusCode}`);
+          if (response.statusCode !== 200) {
+            const error = new Error(data.error || `监控返回 ${response.statusCode}`);
+            error.statusCode = response.statusCode;
+            throw error;
+          }
           done(data);
         } catch (error) { fail(error); }
       });
     });
-    req.setTimeout(1500, () => req.destroy(new Error('监控响应超时')));
+    req.setTimeout(body === undefined ? 1500 : 12000, () => req.destroy(new Error('监控响应超时')));
     req.on('error', fail);
-    req.end();
+    req.end(payload);
   });
 }
 
@@ -66,10 +72,16 @@ export class HudController {
     return recorded;
   }
 
-  async call(instance, path, post = false) {
+  async call(instance, path, post = false, body) {
     const prefs = await readJSON(join(this.dataDirectory, '.hud_prefs.json'));
     if (!prefs.api_token) throw new Error('监控控制令牌尚未就绪');
-    return localJSON(instance.port, path, prefs.api_token, post);
+    return localJSON(instance.port, path, prefs.api_token, post, body);
+  }
+
+  async credentials(body) {
+    const instance = body === undefined ? await this.instance() : await this.ensure(true);
+    if (!instance) return {configured: false, running: false};
+    return {...await this.call(instance, '/api/credentials', body !== undefined, body), running: true};
   }
 
   async state() {

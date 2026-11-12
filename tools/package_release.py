@@ -20,6 +20,7 @@ PRIVATE_NAMES = {".hud_prefs.json", ".hud_state.json", ".hud_instance.json",
                  ".hud.lock", ".hud.log", "local-config.json", "bailian_usage.jsonl",
                  "bss-credentials.json"}
 SOURCE_FILES = ("BailianHUD.py", "hud_runtime.py", "hud_tray.py", "README.md",
+                "Import-AK.cmd", "Import-AK.ps1",
                 "LICENSE", ".gitignore", "requirements.txt", "requirements-build.txt",
                 "bss-credentials.example.json")
 SOURCE_DIRS = ("assets", "docs", "extras", "licenses", "tests", ".github", "tools")
@@ -134,7 +135,8 @@ def main():
                         raise RuntimeError("Local credential in TGZ")
 
         windows = [(p, p.relative_to(binary)) for p in files_under(binary)]
-        windows += [(ROOT / name, Path(name)) for name in ("README.md", "LICENSE", "bss-credentials.example.json")]
+        windows += [(ROOT / name, Path(name)) for name in
+                    ("README.md", "LICENSE", "bss-credentials.example.json", "Import-AK.cmd", "Import-AK.ps1")]
         for name in ("licenses", "extras", "docs"):
             windows.extend((p, p.relative_to(ROOT)) for p in files_under(ROOT / name))
         make_zip(targets[2], windows)

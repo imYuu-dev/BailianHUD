@@ -15,6 +15,71 @@ window.__ModuleLoader__.load({
       return data;
     }
 
+    async function credentials(body) {
+      const response = await fetch('/bailian-hud/credentials', {
+        method: body ? 'POST' : 'GET', cache: 'no-store',
+        headers: {'X-Bailian-Control': '1', ...(body ? {'Content-Type': 'application/json'} : {})},
+        ...(body ? {body: JSON.stringify(body)} : {}), signal: AbortSignal.timeout(25000)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '保存失败，请重试');
+      return data;
+    }
+
+    function Credentials() {
+      const [id, setId] = React.useState('');
+      const [secret, setSecret] = React.useState('');
+      const [state, setState] = React.useState(null);
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState('');
+      React.useEffect(() => {
+        let live = true;
+        let pending = false;
+        const refresh = async () => {
+          if (pending) return;
+          pending = true;
+          try { const value = await credentials(); if (live) setState(value); }
+          catch (e) { if (live) setError(e.message); }
+          finally { pending = false; }
+        };
+        void refresh();
+        const timer = setInterval(refresh, 3000);
+        return () => { live = false; clearInterval(timer); };
+      }, []);
+      const save = async event => {
+        event.preventDefault();
+        if (busy) return;
+        setBusy(true); setError('');
+        try {
+          setState(await credentials({aliyunAkId: id, aliyunAkSecret: secret}));
+          setId(''); setSecret('');
+        } catch (e) { setError(e.message); }
+        finally { setBusy(false); }
+      };
+      const field = {font: 'inherit', color: 'inherit', width: '100%', boxSizing: 'border-box',
+        padding: '10px 12px', border: '1px solid #8885', borderRadius: 7, background: 'transparent'};
+      const status = !state ? '正在读取配置' : !state.running ? '服务已停止'
+        : !state.configured ? '未配置' : state.environment ? '当前使用环境变量中的 AK'
+        : state.sync?.ok ? '已同步' : state.sync?.error || '已保存，正在同步';
+      return h('section', {style: {maxWidth: 460, padding: '24px 0', display: 'grid', gap: 20}},
+        h('h2', {style: {fontSize: 18, margin: 0}}, '阿里云 AccessKey'),
+        h('form', {onSubmit: save, autoComplete: 'off', style: {display: 'grid', gap: 16}},
+          h('label', {style: {display: 'grid', gap: 8}}, 'AccessKey ID',
+            h('input', {value: id, onChange: e => setId(e.target.value), disabled: busy, required: true,
+              spellCheck: false, autoComplete: 'off', maxLength: 512, style: field})),
+          h('label', {style: {display: 'grid', gap: 8}}, 'AccessKey Secret',
+            h('input', {type: 'password', value: secret, onChange: e => setSecret(e.target.value), disabled: busy,
+              required: true, autoComplete: 'off', maxLength: 512, style: field})),
+          h('button', {type: 'submit', disabled: busy || !id.trim() || !secret.trim(),
+            style: {font: 'inherit', color: 'inherit', padding: '10px 16px', border: '1px solid #8885',
+              borderRadius: 7, background: 'var(--dsw-alias-background-secondary, #8881)', justifySelf: 'start',
+              cursor: 'pointer'}}, busy ? '正在保存…' : '保存并同步')),
+        h('div', {role: error || state?.sync?.error ? 'alert' : 'status', 'aria-live': 'polite',
+          style: {fontSize: 13}}, error || status),
+        h('a', {href: 'https://github.com/imYuu-dev/BailianHUD#获取自己的-ak', target: '_blank',
+          rel: 'noreferrer', style: {fontSize: 13, color: 'inherit'}}, '获取 AccessKey'));
+    }
+
     function Controls({menu = false}) {
       const [state, setState] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
@@ -76,6 +141,9 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
+        ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+          name: 'plugins.bundle.config', key: 'dsh-bailian-hud', inject: () => ({})
+        }, Credentials));
         ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
           name: 'sidebar.footer.action', id: 'bailian-hud', key: 'bailian-hud', order: 30, inject: () => ({})
         }, Controls));

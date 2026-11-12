@@ -35,28 +35,38 @@ export function apply(ctx) {
     const value = await ready.catch(() => null);
     await value?.controller.dispose();
   }, 'bailian-hud lifecycle');
-  ctx.effect(() => ctx.webServer.register({kind: 'exact', path: '/bailian-hud/control',
-    handler: async (req, res) => {
-      const send = (status, value) => {
-        res.writeHead(status, {'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store'});
-        res.end(JSON.stringify(value));
-      };
-      try {
-        if (!safeControlRequest(req)) return send(403, {error: '请从 DSH 界面操作'});
-        if (!['GET', 'POST'].includes(req.method)) return send(405, {error: '不支持的请求'});
-        const {controller} = await ready;
-        if (req.method === 'GET') return send(200, {...await controller.state(), startupError});
-        let body = '';
-        for await (const chunk of req) {
-          body += chunk;
-          if (body.length > 2048) return send(413, {error: '请求过大'});
-        }
-        const action = JSON.parse(body).action;
-        if (!allowedActions.has(action)) return send(400, {error: '不支持的监控操作'});
-        const result = await controller.action(action);
-        startupError = '';
-        send(200, result);
-      } catch (error) { send(500, {error: error.message}); }
-    }
-  }), 'bailian-hud control');
+  const handler = async (req, res) => {
+    const send = (status, value) => {
+      res.writeHead(status, {'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store'});
+      res.end(JSON.stringify(value));
+    };
+    try {
+      if (!safeControlRequest(req)) return send(403, {error: '请从 DSH 界面操作'});
+      if (!['GET', 'POST'].includes(req.method)) return send(405, {error: '不支持的请求'});
+      const {controller} = await ready;
+      const credentials = req.url.split('?')[0] === '/bailian-hud/credentials';
+      if (req.method === 'GET') return send(200, credentials ? await controller.credentials()
+        : {...await controller.state(), startupError});
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 4096) return send(413, {error: '请求过大'});
+        chunks.push(chunk);
+      }
+      let body;
+      try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+      catch { return send(400, {error: '请求格式有误'}); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return send(400, {error: '请求格式有误'});
+      if (credentials) return send(200, await controller.credentials(body));
+      const {action} = body;
+      if (!allowedActions.has(action)) return send(400, {error: '不支持的监控操作'});
+      const result = await controller.action(action);
+      startupError = '';
+      send(200, result);
+    } catch (error) { send(error.statusCode || 500, {error: error.message}); }
+  };
+  for (const path of ['/bailian-hud/control', '/bailian-hud/credentials']) {
+    ctx.effect(() => ctx.webServer.register({kind: 'exact', path, handler}), path);
+  }
 }

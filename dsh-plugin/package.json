@@ -1,6 +1,6 @@
 {
   "name": "dsh-bailian-hud",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "百炼余额浮窗插件：内置引擎，随 DSH 启停，保留原有浮窗与监控面板",
   "type": "module",
   "main": "index.js",

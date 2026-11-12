@@ -30,6 +30,7 @@ import os
 import queue
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -48,7 +49,7 @@ from hud_runtime import (DEFAULT_PORT, PLUGIN_PORT, ParentWatch, InstanceLock, c
                          local_json, publish_instance)
 
 APP_NAME = "BailianHUD"
-APP_VERSION = "2.4"
+APP_VERSION = "2.5"
 # 数据与程序分离：更新 exe 或分享源码时不会带上个人余额和令牌。
 BASE_DIR = Path(os.environ.get("BAILIAN_HUD_HOME") or
                 (Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / APP_NAME))
@@ -488,6 +489,8 @@ class CouponSync(threading.Thread):
         self.store = store
         self.coupon_no = (coupon_no or "").strip()
         self.stop_evt = threading.Event()
+        self.wake_evt = threading.Event()
+        self.poll_lock = threading.Lock()
         self.lock = threading.Lock()
         self.state = {"ok": False, "error": "", "at": 0.0, "balance": None,
                       "coupon": "", "desc": "", "count": 0, "next": 0.0}
@@ -495,6 +498,56 @@ class CouponSync(threading.Thread):
     def status(self) -> dict:
         with self.lock:
             return dict(self.state)
+
+    def credential_status(self) -> dict:
+        cred = load_aliyun_ak()
+        state = self.status()
+        return {"configured": bool(cred),
+                "environment": bool(cred and cred[3] != "本地配置"),
+                "sync": {key: state[key] for key in ("ok", "error", "at", "next")}}
+
+    def configure_credentials(self, data: dict) -> dict:
+        if not isinstance(data, dict):
+            raise ValueError("请填写 AccessKey ID 和 AccessKey Secret")
+        values = {}
+        for key, label in (("aliyunAkId", "AccessKey ID"),
+                           ("aliyunAkSecret", "AccessKey Secret")):
+            value = data.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"请填写 {label}")
+            value = value.strip()
+            if len(value) > 512 or any(not 33 <= ord(char) <= 126 for char in value):
+                raise ValueError(f"{label} 格式有误，请重新粘贴")
+            values[key] = value
+        if values["aliyunAkId"].startswith("sk-"):
+            raise ValueError("请粘贴阿里云 AccessKey ID")
+        with self.poll_lock:
+            previous = load_aliyun_ak()
+            path = self.store.base_dir / AK_FILE.name
+            existing = aliyun_conf()
+            if existing.get("bssEndpoint"):
+                values["bssEndpoint"] = existing["bssEndpoint"]
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                                 prefix=".ak-", suffix=".tmp", delete=False) as file:
+                    temporary = Path(file.name)
+                    json.dump(values, file, ensure_ascii=False)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.replace(temporary, path)
+            finally:
+                if temporary:
+                    temporary.unlink(missing_ok=True)
+            current = load_aliyun_ak()
+            if current and (not previous or previous[0] != current[0]):
+                identity = self.store.coupon_identity()
+                self.store.configure_coupon(identity["configured"], reset=True)
+                self.coupon_no = identity["configured"]
+            self._set(ok=False, error="", at=0.0, next=time.time())
+            self.store.set_coupon_sync_error(True)
+            self.wake_evt.set()
+            return self.credential_status()
 
     def _pick(self, coupons: list):
         identity = self.store.coupon_identity()
@@ -519,46 +572,53 @@ class CouponSync(threading.Thread):
             self.state.update(kw)
 
     def run(self):
+        while not self.stop_evt.is_set():
+            with self.poll_lock:
+                self.wake_evt.clear()
+                self._poll()
+            self.wake_evt.wait(self.INTERVAL)
+
+    def _poll(self):
         cred = load_aliyun_ak()
         if not cred:
-            log("coupon sync: 未配置阿里云 AccessKey，跳过 BSS 轮询")
-            self._set(error="未配置 AccessKey")
+            self._set(ok=False, error="未配置 AccessKey", next=time.time() + self.INTERVAL)
             self.store.set_coupon_sync_error(True)
             return
-        log(f"coupon sync: AK 就绪（{cred[3]}），每 {int(self.INTERVAL)}s 同步券余额")
-        while not self.stop_evt.is_set():
-            try:
-                coupons = fetch_coupons()
-                chosen, why = self._pick(coupons)
-                if chosen is None:
-                    self._set(ok=False, error=why or "没有可用代金券", at=time.time(),
-                              count=len(coupons), next=time.time() + self.INTERVAL)
-                    issue = ("unavailable" if "已失效" in why else
-                             "missing" if "绑定的券号" in why else "error")
-                    self.store.set_coupon_sync_error(True, issue)
-                else:
-                    bal = float(chosen["balance"])
-                    nominal = float(chosen["nominal"])
-                    self.store.push_balance(
-                        bal, "real", kind="bss", coupon_no=chosen["no"],
-                        coupon_id=chosen["id"], nominal=nominal if 0.01 <= nominal <= 1e7 else None)
-                    self.store.set_coupon_sync_error(False)
-                    if not self.coupon_no:
-                        self.coupon_no = chosen["no"] or chosen["id"]
-                    self._set(ok=True, error="", at=time.time(), balance=bal,
-                              coupon=chosen["no"], desc=chosen["desc"] or why,
-                              count=len(coupons), next=time.time() + self.INTERVAL)
-                    log(f"coupon sync: {chosen['no']} 余额 {bal:.2f}（{why}）")
-            except Exception as exc:
-                self._set(ok=False, error=str(exc)[:180], at=time.time(),
-                          next=time.time() + self.INTERVAL)
-                self.store.set_coupon_sync_error(True)
-                log(f"coupon sync failed: {exc}")
-            if self.stop_evt.wait(self.INTERVAL):
-                break
+        try:
+            coupons = fetch_coupons()
+            chosen, why = self._pick(coupons)
+            if chosen is None:
+                self._set(ok=False, error=why or "没有可用代金券", at=time.time(),
+                          count=len(coupons), next=time.time() + self.INTERVAL)
+                issue = ("unavailable" if "已失效" in why else
+                         "missing" if "绑定的券号" in why else "error")
+                self.store.set_coupon_sync_error(True, issue)
+            else:
+                bal = float(chosen["balance"])
+                nominal = float(chosen["nominal"])
+                self.store.push_balance(
+                    bal, "real", kind="bss", coupon_no=chosen["no"],
+                    coupon_id=chosen["id"], nominal=nominal if 0.01 <= nominal <= 1e7 else None)
+                self.store.set_coupon_sync_error(False)
+                if not self.coupon_no:
+                    self.coupon_no = chosen["no"] or chosen["id"]
+                self._set(ok=True, error="", at=time.time(), balance=bal,
+                          coupon=chosen["no"], desc=chosen["desc"] or why,
+                          count=len(coupons), next=time.time() + self.INTERVAL)
+                log(f"coupon sync: {chosen['no']} 余额 {bal:.2f}（{why}）")
+        except Exception as exc:
+            error = str(exc)
+            for value in cred[:3]:
+                if value:
+                    error = error.replace(value, "***")
+            self._set(ok=False, error=error[:180], at=time.time(),
+                      next=time.time() + self.INTERVAL)
+            self.store.set_coupon_sync_error(True)
+            log(f"coupon sync failed: {error[:180]}")
 
     def stop(self):
         self.stop_evt.set()
+        self.wake_evt.set()
 
 
 # ---------------------------------------------------------------- 状态存储
@@ -868,14 +928,14 @@ class Store:
             return {"configured": self.coupon_config, "coupon_no": self.coupon_no,
                     "coupon_id": self.coupon_id}
 
-    def configure_coupon(self, coupon: str):
+    def configure_coupon(self, coupon: str, *, reset=False):
         """配置变更时清除旧身份，等待新券同步。"""
         coupon = str(coupon or "").strip()[:200]
         with self.lock:
-            if coupon == self.coupon_config:
+            if coupon == self.coupon_config and not reset:
                 return
             known = {s.lower() for s in (self.coupon_no, self.coupon_id) if s}
-            reset = bool((coupon and coupon.lower() not in known)
+            reset = bool(reset or (coupon and coupon.lower() not in known)
                          or (not coupon and self.coupon_config))
             self.coupon_config = coupon
             if reset:
@@ -883,7 +943,8 @@ class Store:
                 self.balance_source = "estimate"
                 self.balance_kind = "seed"
                 self.balance_ts = 0.0
-                self.seed_note = "券号已变更，等待同步新的余额"
+                self.balance_hist.clear()
+                self.seed_note = "等待同步新的余额"
         self.save()
 
     def set_coupon_sync_error(self, failed: bool, issue: str = "error"):
@@ -1312,6 +1373,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._token_ok():
                 return self.reject(403, "authentication required")
             return self.send_json(dict(getattr(self.server, "hud_state", {})))
+        if route == "/api/credentials":
+            if not self._token_ok():
+                return self.reject(403, "authentication required")
+            sync = getattr(self.server, "coupon_sync", None)
+            if not sync:
+                return self.reject(503, "余额同步服务尚未就绪")
+            return self.send_json(sync.credential_status())
         if route == "/api/coupon-binding":
             origin = self._origin()
             if origin not in PUSH_ORIGINS and not self._token_ok():
@@ -1355,7 +1423,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reject(403, "authentication required")
             if not self._is_json():
                 return self.reject(415, "application/json required")
-        elif route == "/api/calibrate":
+        elif route in ("/api/calibrate", "/api/credentials"):
             if not self._token_ok():
                 return self.reject(403, "authentication required")
             if not self._is_json():
@@ -1404,6 +1472,17 @@ class Handler(BaseHTTPRequestHandler):
                                        "cost_factor": factor})
             except (KeyError, TypeError, ValueError) as exc:
                 return self.send_json({"ok": False, "error": str(exc)}, 400)
+        if route == "/api/credentials":
+            sync = getattr(self.server, "coupon_sync", None)
+            if not sync:
+                return self.reject(503, "余额同步服务尚未就绪")
+            try:
+                data = json.loads(body.decode("utf-8"))
+                return self.send_json(sync.configure_credentials(data))
+            except (ValueError, UnicodeError) as exc:
+                return self.send_json({"ok": False, "error": str(exc)}, 400)
+            except OSError:
+                return self.send_json({"ok": False, "error": "保存失败，请检查数据目录的写入权限"}, 500)
         if route.startswith("/api/hud/"):
             command = route.rsplit("/", 1)[-1]
             control = getattr(self.server, "hud_control", None)
@@ -5024,6 +5103,7 @@ def main(argv=None) -> int:
 
         if store is not None and not args.attach and not args.no_proxy:
             coupon_sync = CouponSync(store, prefs.get("coupon", ""))
+            service.server.coupon_sync = coupon_sync
             coupon_sync.start()
         app = HudApp(source, store=store, service=service, port=port,
                      prefs=prefs, show_flag=show_flag, coupon_sync=coupon_sync,

@@ -6,18 +6,27 @@ import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { HudController } from '../controller.mjs';
-import { safeControlRequest } from '../index.js';
+import { apply, safeControlRequest } from '../index.js';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'bailian-plugin-'));
   const state = {shown: true, user_hidden: false, mode: 'plugin', owner_pid: process.pid};
   const calls = [];
+  const imports = [];
   let id = 'synthetic-instance';
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/api/ping') return res.end(JSON.stringify({app: 'BailianHUD', instance_id: id,
       data_id: createHash('sha256').update(root.toLowerCase()).digest('hex').slice(0, 24)}));
     if (req.headers['x-hud-token'] !== 'synthetic-token') { res.statusCode = 403; return res.end('{}'); }
+    if (req.url === '/api/credentials') {
+      if (req.method === 'POST') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        imports.push(JSON.parse(body));
+      }
+      return res.end(JSON.stringify({configured: imports.length > 0, sync: {ok: true, error: ''}}));
+    }
     if (req.method === 'POST') {
       const action = req.url.split('/').at(-1);
       calls.push(action);
@@ -33,8 +42,19 @@ async function fixture(t) {
   await writeFile(join(root, '.hud_prefs.json'), JSON.stringify({api_token: 'synthetic-token'}));
   t.after(async () => { await new Promise(done => server.close(done)); await rm(root, {recursive: true}); });
   const controller = new HudController({enginePath: join(root, 'BailianHUD.exe'), dataDirectory: root});
-  return {root, port, calls, controller, state};
+  return {root, port, calls, imports, controller, state};
 }
+
+test('credential form posts the pair to the authenticated worker and receives status only', async t => {
+  const {controller, imports} = await fixture(t);
+  assert.equal((await controller.credentials()).configured, false);
+  const pair = {aliyunAkId: 'test-id', aliyunAkSecret: 'test-secret'};
+  const result = await controller.credentials(pair);
+  assert.deepEqual(imports, [pair]);
+  assert.equal(result.configured, true);
+  assert.equal(result.sync.ok, true);
+  assert.equal(JSON.stringify(result).includes('test-secret'), false);
+});
 
 test('DSH buttons control the original service without exposing tokens', async t => {
   const {controller, port, calls} = await fixture(t);
@@ -75,6 +95,40 @@ test('plugin controls reject cross-origin browser requests', () => {
   assert.equal(safeControlRequest({headers: {...headers, origin: 'https://other.example'}}), false);
   assert.equal(safeControlRequest({headers: {...headers, 'sec-fetch-site': 'cross-site'}}), false);
   assert.equal(safeControlRequest({headers: {host: 'localhost:3080'}}), false);
+});
+
+test('plugin config page routes accept credentials and reject malformed or cross-site writes', async t => {
+  const received = [];
+  t.mock.method(HudController.prototype, 'ensure', async () => ({}));
+  t.mock.method(HudController.prototype, 'dispose', async () => {});
+  t.mock.method(HudController.prototype, 'credentials', async body => {
+    if (body) received.push(body);
+    return {configured: received.length > 0, running: true};
+  });
+  const routes = new Map();
+  const cleanups = [];
+  apply({effect: callback => cleanups.push(callback()), webServer: {
+    register: route => { routes.set(route.path, route.handler); return () => {}; }
+  }});
+  const server = createServer((req, res) => routes.get(req.url)(req, res));
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  t.after(async () => {
+    await new Promise(done => server.close(done));
+    for (const cleanup of cleanups) await cleanup();
+  });
+  const url = `http://127.0.0.1:${server.address().port}/bailian-hud/credentials`;
+  const headers = {'X-Bailian-Control': '1', 'Content-Type': 'application/json'};
+  assert.equal((await fetch(url, {headers}).then(r => r.json())).configured, false);
+  const pair = {aliyunAkId: 'example-id', aliyunAkSecret: 'example-secret'};
+  const saved = await fetch(url, {headers, method: 'POST', body: JSON.stringify(pair)});
+  assert.equal(saved.status, 200);
+  assert.deepEqual(received, [pair]);
+  assert.equal(JSON.stringify(await saved.json()).includes('example-secret'), false);
+  assert.equal((await fetch(url, {headers, method: 'POST', body: '['})).status, 400);
+  assert.equal((await fetch(url, {headers: {...headers, Origin: 'https://other.example'},
+    method: 'POST', body: JSON.stringify(pair)})).status, 403);
+  assert.equal((await fetch(url, {headers, method: 'POST', body: 'x'.repeat(4097)})).status, 413);
+  assert.equal(received.length, 1);
 });
 
 test('disabling the plugin stops only its own worker', async t => {
