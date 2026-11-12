@@ -30,7 +30,6 @@ import os
 import queue
 import secrets
 import sys
-import tempfile
 import threading
 import time
 import tkinter as tk
@@ -45,11 +44,12 @@ from ctypes import wintypes
 from datetime import datetime, time as dtime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from hud_credentials import account_id, active_account, public_accounts, read_accounts, save_accounts
 from hud_runtime import (DEFAULT_PORT, PLUGIN_PORT, ParentWatch, InstanceLock, clear_instance, directory_id, discover,
                          local_json, publish_instance)
 
 APP_NAME = "BailianHUD"
-APP_VERSION = "2.5"
+APP_VERSION = "2.6"
 # 数据与程序分离：更新 exe 或分享源码时不会带上个人余额和令牌。
 BASE_DIR = Path(os.environ.get("BAILIAN_HUD_HOME") or
                 (Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / APP_NAME))
@@ -333,37 +333,21 @@ class CouponBindingError(ValueError):
 
 
 def aliyun_conf() -> dict:
-    for path in (AK_FILE, LEGACY_AK_FILE):
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text("utf-8-sig"))
-            return data if isinstance(data, dict) else {}
-        except Exception as exc:
-            log(f"ak file: {exc!r}")
-            return {}  # 显式配置损坏时不默默切换到另一个账号。
-    return {}
+    try:
+        return active_account(read_accounts(AK_FILE, LEGACY_AK_FILE)) or {}
+    except ValueError as exc:
+        log(f"ak file: {exc}")
+        return {}
 
 
-def load_aliyun_ak():
+def load_aliyun_ak(conf=None):
     """返回 (ak_id, ak_secret, sts_token, 来源) 或 None。"""
-    envs = (
-        ("ALIYUN_AK_ID", "ALIYUN_AK_SECRET", "ALIYUN_STS_TOKEN"),
-        ("ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
-         "ALIBABA_CLOUD_SECURITY_TOKEN"),
-        ("ALIYUN_ACCESS_KEY_ID", "ALIYUN_ACCESS_KEY_SECRET", "ALIYUN_SECURITY_TOKEN"),
-    )
-    for kid, ksec, ktok in envs:
-        ak = (os.environ.get(kid) or "").strip()
-        sk = (os.environ.get(ksec) or "").strip()
-        if ak and sk:
-            return ak, sk, (os.environ.get(ktok) or "").strip(), kid
-    conf = aliyun_conf()
+    conf = aliyun_conf() if conf is None else conf
     ak = str(conf.get("aliyunAkId") or conf.get("accessKeyId") or "").strip()
     sk = str(conf.get("aliyunAkSecret") or conf.get("accessKeySecret") or "").strip()
     tok = str(conf.get("aliyunStsToken") or conf.get("securityToken") or "").strip()
     if ak and sk:
-        return ak, sk, tok, "本地配置"
+        return ak, sk, tok, conf.get("source", "本地配置")
     return None
 
 
@@ -493,22 +477,31 @@ class CouponSync(threading.Thread):
         self.poll_lock = threading.Lock()
         self.lock = threading.Lock()
         self.state = {"ok": False, "error": "", "at": 0.0, "balance": None,
-                      "coupon": "", "desc": "", "count": 0, "next": 0.0}
+                      "coupon": "", "desc": "", "count": 0, "next": 0.0, "accountId": ""}
 
     def status(self) -> dict:
         with self.lock:
             return dict(self.state)
 
     def credential_status(self) -> dict:
-        cred = load_aliyun_ak()
+        data = read_accounts(self.store.base_dir / AK_FILE.name, LEGACY_AK_FILE)
+        account = active_account(data)
         state = self.status()
-        return {"configured": bool(cred),
-                "environment": bool(cred and cred[3] != "本地配置"),
+        if state["accountId"] != data["activeAccountId"]:
+            state.update(ok=False, error="", at=0.0, next=0.0)
+        return {**public_accounts(data), "configured": bool(account),
+                "environment": bool(account and account.get("source", "本地配置") != "本地配置"),
                 "sync": {key: state[key] for key in ("ok", "error", "at", "next")}}
 
     def configure_credentials(self, data: dict) -> dict:
         if not isinstance(data, dict):
             raise ValueError("请填写 AccessKey ID 和 AccessKey Secret")
+        if data.get("action") == "list":
+            return self.credential_status()
+        if data.get("action") == "select":
+            return self.select_account(data.get("accountId"))
+        if data.get("action") not in (None, "import"):
+            raise ValueError("不支持的账号操作")
         values = {}
         for key, label in (("aliyunAkId", "AccessKey ID"),
                            ("aliyunAkSecret", "AccessKey Secret")):
@@ -521,33 +514,56 @@ class CouponSync(threading.Thread):
             values[key] = value
         if values["aliyunAkId"].startswith("sk-"):
             raise ValueError("请粘贴阿里云 AccessKey ID")
+        name = data.get("name", "")
+        if not isinstance(name, str) or len(name.strip()) > 60 or any(ord(char) < 32 for char in name):
+            raise ValueError("账号名称请使用 60 字以内的文本")
         with self.poll_lock:
-            previous = load_aliyun_ak()
             path = self.store.base_dir / AK_FILE.name
-            existing = aliyun_conf()
-            if existing.get("bssEndpoint"):
-                values["bssEndpoint"] = existing["bssEndpoint"]
-            temporary = None
-            try:
-                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                                 prefix=".ak-", suffix=".tmp", delete=False) as file:
-                    temporary = Path(file.name)
-                    json.dump(values, file, ensure_ascii=False)
-                    file.flush()
-                    os.fsync(file.fileno())
-                os.replace(temporary, path)
-            finally:
-                if temporary:
-                    temporary.unlink(missing_ok=True)
-            current = load_aliyun_ak()
-            if current and (not previous or previous[0] != current[0]):
-                identity = self.store.coupon_identity()
-                self.store.configure_coupon(identity["configured"], reset=True)
-                self.coupon_no = identity["configured"]
-            self._set(ok=False, error="", at=0.0, next=time.time())
-            self.store.set_coupon_sync_error(True)
-            self.wake_evt.set()
+            accounts = read_accounts(path, LEGACY_AK_FILE)
+            current = active_account(accounts)
+            if current and "coupon" not in current:
+                current["coupon"] = self.store.coupon_identity()["configured"]
+            key = account_id(values["aliyunAkId"])
+            account = next((item for item in accounts["accounts"] if item["id"] == key), None)
+            if account is None:
+                account = {"id": key, "name": name.strip() or f"账号{len(accounts['accounts']) + 1}", "coupon": ""}
+                accounts["accounts"].append(account)
+            elif name.strip():
+                account["name"] = name.strip()
+            account.update(values)
+            account.pop("aliyunStsToken", None)
+            if not current:
+                accounts["activeAccountId"] = key
+            save_accounts(path, accounts)
+            if accounts["activeAccountId"] == key:
+                self._refresh_account(account, reset=not current)
             return self.credential_status()
+
+    def select_account(self, key):
+        with self.poll_lock:
+            path = self.store.base_dir / AK_FILE.name
+            data = read_accounts(path, LEGACY_AK_FILE)
+            target = next((item for item in data["accounts"] if item["id"] == key), None)
+            if target is None:
+                raise ValueError("请选择已导入的账号")
+            current = active_account(data)
+            changed = key != data["activeAccountId"]
+            if current:
+                current["coupon"] = self.store.coupon_identity()["configured"]
+            data["activeAccountId"] = key
+            save_accounts(path, data)
+            self._refresh_account(target, reset=changed)
+            return self.credential_status()
+
+    def _refresh_account(self, account, *, reset):
+        reset = reset or bool(self.store.balance_account_id and self.store.balance_account_id != account["id"])
+        self.store.configure_coupon(account.get("coupon", self.store.coupon_identity()["configured"]),
+                                    reset=reset, account_id=account["id"])
+        if reset:
+            self.coupon_no = account.get("coupon", "")
+        self._set(ok=False, error="", at=0.0, next=time.time(), accountId=account["id"])
+        self.store.set_coupon_sync_error(True)
+        self.wake_evt.set()
 
     def _pick(self, coupons: list):
         identity = self.store.coupon_identity()
@@ -579,11 +595,19 @@ class CouponSync(threading.Thread):
             self.wake_evt.wait(self.INTERVAL)
 
     def _poll(self):
-        cred = load_aliyun_ak()
+        account = aliyun_conf()
+        cred = load_aliyun_ak(account)
         if not cred:
             self._set(ok=False, error="未配置 AccessKey", next=time.time() + self.INTERVAL)
             self.store.set_coupon_sync_error(True)
             return
+        if self.store.balance_account_id != account["id"]:
+            changed = bool(self.store.balance_account_id)
+            self.store.configure_coupon(account.get("coupon", self.store.coupon_identity()["configured"]),
+                                        reset=changed, account_id=account["id"])
+            if changed:
+                self.coupon_no = account.get("coupon", "")
+        self._set(accountId=account["id"])
         try:
             coupons = fetch_coupons()
             chosen, why = self._pick(coupons)
@@ -639,6 +663,7 @@ class Store:
         self.coupon_config = ""
         self.coupon_no = ""
         self.coupon_id = ""
+        self.balance_account_id = ""
         self.coupon_sync_error = False
         self.coupon_sync_issue = ""
         self.seed_note = ""
@@ -691,6 +716,7 @@ class Store:
             self.coupon_config = str(d.get("coupon_config") or "").strip()[:200]
             self.coupon_no = str(d.get("coupon_no") or "").strip()[:200]
             self.coupon_id = str(d.get("coupon_id") or "").strip()[:200]
+            self.balance_account_id = str(d.get("balance_account_id") or "")
 
             raw_hist = d.get("balance_hist") or []
             hist: list[tuple[float, float]] = []
@@ -723,6 +749,7 @@ class Store:
                         "coupon_config": self.coupon_config,
                         "coupon_no": self.coupon_no,
                         "coupon_id": self.coupon_id,
+                        "balance_account_id": self.balance_account_id,
                         "seed_note": self.seed_note,
                         "balance_hist": [[round(t, 1), round(v, 6)] for t, v in self.balance_hist[-120:]],
                         "updated": time.time(),
@@ -928,12 +955,16 @@ class Store:
             return {"configured": self.coupon_config, "coupon_no": self.coupon_no,
                     "coupon_id": self.coupon_id}
 
-    def configure_coupon(self, coupon: str, *, reset=False):
+    def configure_coupon(self, coupon: str, *, reset=False, account_id=""):
         """配置变更时清除旧身份，等待新券同步。"""
         coupon = str(coupon or "").strip()[:200]
         with self.lock:
-            if coupon == self.coupon_config and not reset:
+            account_changed = bool(account_id and account_id != self.balance_account_id)
+            reset = reset or bool(account_changed and self.balance_account_id)
+            if coupon == self.coupon_config and not reset and not account_changed:
                 return
+            if account_id:
+                self.balance_account_id = account_id
             known = {s.lower() for s in (self.coupon_no, self.coupon_id) if s}
             reset = bool(reset or (coupon and coupon.lower() not in known)
                          or (not coupon and self.coupon_config))
@@ -1379,7 +1410,10 @@ class Handler(BaseHTTPRequestHandler):
             sync = getattr(self.server, "coupon_sync", None)
             if not sync:
                 return self.reject(503, "余额同步服务尚未就绪")
-            return self.send_json(sync.credential_status())
+            try:
+                return self.send_json(sync.credential_status())
+            except ValueError as exc:
+                return self.send_json({"ok": False, "error": str(exc)}, 400)
         if route == "/api/coupon-binding":
             origin = self._origin()
             if origin not in PUSH_ORIGINS and not self._token_ok():
@@ -5065,7 +5099,9 @@ def main(argv=None) -> int:
         else:
             store = Store(BASE_DIR)
             if not args.attach:
-                store.configure_coupon(prefs.get("coupon", ""))
+                account = aliyun_conf()
+                store.configure_coupon(account.get("coupon", prefs.get("coupon", "")),
+                                       account_id=account.get("id", ""))
             if args.face is not None:
                 try:
                     face = finite_float(args.face, "face", 0.01, 1e7)
@@ -5102,7 +5138,7 @@ def main(argv=None) -> int:
                     source = store
 
         if store is not None and not args.attach and not args.no_proxy:
-            coupon_sync = CouponSync(store, prefs.get("coupon", ""))
+            coupon_sync = CouponSync(store, aliyun_conf().get("coupon", prefs.get("coupon", "")))
             service.server.coupon_sync = coupon_sync
             coupon_sync.start()
         app = HudApp(source, store=store, service=service, port=port,

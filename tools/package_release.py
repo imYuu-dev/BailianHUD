@@ -19,7 +19,7 @@ PLUGIN_FILES = ("package.json", "index.js", "controller.mjs", "client.js",
 PRIVATE_NAMES = {".hud_prefs.json", ".hud_state.json", ".hud_instance.json",
                  ".hud.lock", ".hud.log", "local-config.json", "bailian_usage.jsonl",
                  "bss-credentials.json"}
-SOURCE_FILES = ("BailianHUD.py", "hud_runtime.py", "hud_tray.py", "README.md",
+SOURCE_FILES = ("BailianHUD.py", "hud_runtime.py", "hud_tray.py", "hud_credentials.py", "README.md",
                 "Import-AK.cmd", "Import-AK.ps1",
                 "LICENSE", ".gitignore", "requirements.txt", "requirements-build.txt",
                 "bss-credentials.example.json")
@@ -43,11 +43,13 @@ def local_secrets(private_roots):
             data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
-        for key in ("api_token", "coupon_no", "coupon_id", "coupon", "aliyunAkId", "aliyunAkSecret",
-                    "accessKeyId", "accessKeySecret", "securityToken", "aliyunStsToken"):
-            value = data.get(key)
-            if isinstance(value, str):
-                values.add(value)
+        records = [data] + [item for item in data.get("accounts", []) if isinstance(item, dict)]
+        for record in records:
+            for key in ("api_token", "coupon_no", "coupon_id", "coupon", "aliyunAkId", "aliyunAkSecret",
+                        "accessKeyId", "accessKeySecret", "securityToken", "aliyunStsToken"):
+                value = record.get(key)
+                if isinstance(value, str):
+                    values.add(value)
     return [v.encode("utf-8") for v in values if len(v) >= 8]
 
 

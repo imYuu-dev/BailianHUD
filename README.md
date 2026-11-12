@@ -62,15 +62,17 @@ AK 包含 **AccessKey ID** 和 **AccessKey Secret**，用于查询代金券。�
 
 **DSH 插件**
 
-打开「插件 → dsh-bailian-hud」，粘贴 **AccessKey ID** 和 **AccessKey Secret**，点击「保存并同步」。
+打开「插件 → dsh-bailian-hud」，粘贴 **AccessKey ID** 和 **AccessKey Secret**，点击「导入账号」。账号名称可选填。
+
+页面显示已导入数量，可继续点击「添加账号」。在「当前账号」中选择要显示的账号，浮窗和面板随之切换。相同 AK 再次导入会更新原记录。
 
 **ZCode 程序**
 
-在解压目录双击 **`Import-AK.cmd`**，按提示粘贴 ID 和 Secret，分别按回车。Secret 输入时隐藏显示，脚本会自动启动程序并保存配置。
+在解压目录双击 **`Import-AK.cmd`**。已有账号会列出数量和编号，输入编号切换，按回车添加账号。按提示粘贴 ID 和 Secret，Secret 输入时隐藏显示。
 
 ### 4. 确认同步
 
-保存后立即同步。DSH 配置页显示「已同步」，ZCode 脚本显示「同步成功」。双击浮窗打开监控面板，确认余额和最近更新时间。
+首次导入会自动选中该账号。之后添加账号会保留当前选择，切换账号后立即同步。DSH 配置页显示「已同步」，ZCode 脚本显示「同步成功」。双击浮窗打开监控面板，确认余额和最近更新时间。
 
 ![实际监控面板的余额与同步来源，金额为示例数据](docs/images/panel-balance.png)
 
@@ -92,13 +94,12 @@ DSH 插件随宿主启停。ZCode 程序独立运行。浮窗右键可调整跟�
 | 现象 | 处理 |
 | --- | --- |
 | 一直「待同步」 | 在插件配置页或导入脚本中查看同步结果，检查两个 AK 是否属于同一组 |
-| 提示使用环境变量 | 当前环境变量中的 AK 优先，清除旧环境变量并重启对应程序后重新导入 |
 | `AccessDenied` / `Forbidden` | 确认查询策略已授权给创建 AK 的 RAM 用户，授权范围为整个云账号 |
 | AK 校验失败 | 检查 ID 与 Secret 是否属于同一组、AK 是否启用，以及系统时间和网络 |
 | 未找到券或券不可用 | 确认 AK 属于代金券所在账号，且该券已生效、未过期 |
 | 余额有变化，今日代理为零 | 今日代理仅统计经过本地代理的请求，其他渠道消费由 BSS 余额同步反映 |
 
-多张券需要指定时，在数据目录 `.hud_prefs.json` 的 `coupon` 字段填写目标券的 `CashCouponNo` 或 `CashCouponId`，然后重启。更换绑定后等待新券同步。也可在面板中手动校准余额。
+需要指定某张券时，在数据目录 `bss-credentials.json` 的 `accounts` 列表中找到对应账号，将其 `coupon` 填为目标券的 `CashCouponNo` 或 `CashCouponId`，然后重启。旧单账号配置继续读取 `.hud_prefs.json` 的 `coupon`。也可在面板中手动校准余额。
 
 <details>
 <summary>本地代理与其他配置</summary>
@@ -112,7 +113,7 @@ ZCode 程序  http://127.0.0.1:18766/apps/anthropic
 
 端口冲突时自动回退。从监控面板地址栏或数据目录 `.hud_instance.json` 取得实际地址。显式使用 `--port` 时保持固定端口。退出对应服务会停止代理，停用后可将客户端恢复为原有上游地址。
 
-环境变量 `ALIYUN_AK_ID` / `ALIYUN_AK_SECRET`、`ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET` 优先于文件。兼容 `%USERPROFILE%\.dsh\qwen-coupon.json`，本程序数据目录中的配置文件优先于旧配置。
+已有单账号配置会自动显示为一个账号。首次使用可读取环境变量 `ALIYUN_AK_ID` / `ALIYUN_AK_SECRET`、`ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`，并兼容 `%USERPROFILE%\.dsh\qwen-coupon.json`。添加或选择账号后，使用账号列表中的当前选择。
 
 导入的 AK 自动保存在本机数据目录中的 `bss-credentials.json`。DSH 数据目录为 `%USERPROFILE%\.dsh\storages\bailian-hud`，ZCode 数据目录为 `%LOCALAPPDATA%\BailianHUD`。已有配置文件可继续使用。
 
@@ -145,7 +146,7 @@ python tools/package_release.py
 标准插件包也可通过 CLI 安装，并在 DSH 中启用。
 
 ```powershell
-dsh plugin --profile desktop add /absolute/path/dsh-bailian-hud-0.3.0.tgz
+dsh plugin --profile desktop add /absolute/path/dsh-bailian-hud-0.4.0.tgz
 ```
 
 </details>

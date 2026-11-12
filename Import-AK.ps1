@@ -32,12 +32,7 @@ function Invoke-Hud([int]$Port, [string]$Path, [string]$Token, $Body) {
 }
 
 try {
-    Write-Host '导入阿里云 AccessKey'
-    $akId = (Read-Host 'AccessKey ID').Trim()
-    $secureSecret = Read-Host 'AccessKey Secret' -AsSecureString
-    $secretPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
-    $akSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($secretPointer).Trim()
-    if (-not $akId -or -not $akSecret) { throw '请填写 AccessKey ID 和 AccessKey Secret' }
+    Write-Host '百炼 AK 账号'
 
     $dataDirectory = if ($env:BAILIAN_HUD_HOME) { $env:BAILIAN_HUD_HOME } else { Join-Path $env:LOCALAPPDATA 'BailianHUD' }
     $dataDirectory = [IO.Path]::GetFullPath($dataDirectory).TrimEnd('\')
@@ -72,17 +67,43 @@ try {
     if (-not $instance) { throw '程序未能启动，请检查解压目录中的文件是否完整' }
     $prefs = Get-Content -LiteralPath (Join-Path $dataDirectory '.hud_prefs.json') -Raw | ConvertFrom-Json
     if (-not $prefs.api_token) { throw '程序尚未就绪，请稍后重试' }
-    $result = Invoke-Hud $instance.port '/api/credentials' $prefs.api_token @{aliyunAkId=$akId; aliyunAkSecret=$akSecret}
-    $akSecret = $null
-    Write-Host '已保存，正在同步…'
+    $result = Invoke-Hud $instance.port '/api/credentials' $prefs.api_token $null
+    $accounts = @($result.accounts)
+    Write-Host ('已导入 ' + $accounts.Count + ' 个账号')
+    $choice = ''
+    if ($accounts.Count -gt 0) {
+        for ($index = 0; $index -lt $accounts.Count; $index++) {
+            $account = $accounts[$index]
+            $marker = if ($account.id -eq $result.activeAccountId) { '（当前）' } else { '' }
+            Write-Host (($index + 1).ToString() + '. ' + $account.name + ' · ' + $account.maskedAkId + $marker)
+        }
+        $choice = (Read-Host '输入编号切换账号，按回车添加账号').Trim()
+    }
+    if ($choice) {
+        $number = 0
+        if (-not [int]::TryParse($choice, [ref]$number) -or $number -lt 1 -or $number -gt $accounts.Count) { throw '账号编号无效' }
+        $result = Invoke-Hud $instance.port '/api/credentials' $prefs.api_token @{action='select'; accountId=$accounts[$number - 1].id}
+    }
+    else {
+        $name = (Read-Host '账号名称（可选）').Trim()
+        $akId = (Read-Host 'AccessKey ID').Trim()
+        $secureSecret = Read-Host 'AccessKey Secret' -AsSecureString
+        $secretPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
+        $akSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($secretPointer).Trim()
+        if (-not $akId -or -not $akSecret) { throw '请填写 AccessKey ID 和 AccessKey Secret' }
+        $result = Invoke-Hud $instance.port '/api/credentials' $prefs.api_token @{name=$name; aliyunAkId=$akId; aliyunAkSecret=$akSecret}
+        $akSecret = $null
+        Write-Host ('已导入 ' + $result.count + ' 个账号')
+    }
+    $selected = @($result.accounts | Where-Object {$_.id -eq $result.activeAccountId})[0]
+    Write-Host ('当前显示 ' + $selected.name)
     for ($attempt = 0; $attempt -lt 32; $attempt++) {
-        if ($result.environment) { Write-Host '当前使用环境变量中的 AK'; break }
         if ($result.sync.ok) { Write-Host '同步成功'; break }
         if ($result.sync.error) { Write-Host $result.sync.error; break }
         Start-Sleep -Milliseconds 500
         $result = Invoke-Hud $instance.port '/api/credentials' $prefs.api_token $null
     }
-    if (-not $result.environment -and -not $result.sync.ok -and -not $result.sync.error) {
+    if (-not $result.sync.ok -and -not $result.sync.error) {
         Write-Host '同步中，可在监控面板查看结果'
     }
 }
