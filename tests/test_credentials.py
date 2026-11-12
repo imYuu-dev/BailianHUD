@@ -58,7 +58,7 @@ class CredentialTests(unittest.TestCase):
         pair = {'aliyunAkId': '  LTAI_TEST_ID  ', 'aliyunAkSecret': ' TEST_SECRET '}
         result = self.call(pair)
         self.assertTrue(result['configured'])
-        account = B.active_account(json.loads(B.AK_FILE.read_text()))
+        account = B.active_account(json.loads(B.AK_FILE.read_text(encoding='utf-8')))
         self.assertEqual(account['aliyunAkId'], 'LTAI_TEST_ID')
         self.assertEqual(account['aliyunAkSecret'], 'TEST_SECRET')
         self.assertEqual(result['count'], 1)
@@ -75,7 +75,7 @@ class CredentialTests(unittest.TestCase):
 
     def test_legacy_account_is_counted_and_survives_adding_another_account(self):
         legacy = {'aliyunAkId': 'legacy-id', 'aliyunAkSecret': 'legacy-secret'}
-        B.LEGACY_AK_FILE.write_text(json.dumps(legacy))
+        B.LEGACY_AK_FILE.write_text(json.dumps(legacy), encoding='utf-8')
         self.store.configure_coupon('coupon-legacy')
         self.store.push_balance(88, kind='bss', coupon_no='coupon-legacy')
         initial = self.call()
@@ -87,7 +87,7 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(added['count'], 2)
         self.assertEqual(added['activeAccountId'], initial['activeAccountId'])
         self.assertEqual(self.store.snapshot()['remain'], 88)
-        self.assertEqual(json.loads(B.LEGACY_AK_FILE.read_text()), legacy)
+        self.assertEqual(json.loads(B.LEGACY_AK_FILE.read_text(encoding='utf-8')), legacy)
         self.call({'action': 'select', 'accountId': B.account_id('second-id')})
         self.assertFalse(self.store.snapshot()['balance_available'])
         self.call({'action': 'select', 'accountId': initial['activeAccountId']})
@@ -132,13 +132,13 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(restored.balance_account_id, B.account_id('two-id'))
 
     def test_corrupt_account_file_is_reported_without_falling_back_or_overwriting(self):
-        B.AK_FILE.write_text('{broken')
+        B.AK_FILE.write_text('{broken', encoding='utf-8')
         with self.assertRaises(urllib.error.HTTPError) as error:
             self.call()
         self.assertEqual(error.exception.code, 400)
         with self.assertRaises(urllib.error.HTTPError):
             self.call({'aliyunAkId': 'id', 'aliyunAkSecret': 'secret'})
-        self.assertEqual(B.AK_FILE.read_text(), '{broken')
+        self.assertEqual(B.AK_FILE.read_text(encoding='utf-8'), '{broken')
 
     def test_failed_replace_preserves_previous_pair_and_cleans_temporary_file(self):
         old = {'aliyunAkId': 'old-id', 'aliyunAkSecret': 'old-secret'}
@@ -189,7 +189,7 @@ class CredentialTests(unittest.TestCase):
             self.sync._poll()
         result = self.call()
         self.assertEqual(result['sync']['error'], '*** *** denied')
-        self.assertNotIn('test-secret', B.LOG_FILE.read_text())
+        self.assertNotIn('test-secret', B.LOG_FILE.read_text(encoding='utf-8'))
         with patch.dict(os.environ, {'ALIYUN_AK_ID': 'environment-id', 'ALIYUN_AK_SECRET': 'environment-secret'}):
             self.assertFalse(self.call()['environment'])
             self.assertEqual(B.load_aliyun_ak()[0], 'test-id')
@@ -200,7 +200,7 @@ class CredentialTests(unittest.TestCase):
         server.instance_id = 'test-script-instance'
         server.data_id = B.directory_id(self.root)
         B.publish_instance(self.root, self.service.port, server.instance_id)
-        (self.root / '.hud_prefs.json').write_text(json.dumps({'api_token': 'test-control-token'}))
+        (self.root / '.hud_prefs.json').write_text(json.dumps({'api_token': 'test-control-token'}), encoding='utf-8')
         script = Path(B.__file__).parent / 'Import-AK.ps1'
         command = (
             "function Read-Host { param($Prompt,[switch]$AsSecureString) "
@@ -218,7 +218,7 @@ class CredentialTests(unittest.TestCase):
                                     env={**self.process_env, 'BAILIAN_HUD_HOME': str(self.root),
                                          'BAILIAN_TEST_SCRIPT': str(script)})
         self.assertEqual(result.returncode, 0, result.stdout.decode(errors='replace') + result.stderr.decode(errors='replace'))
-        account = B.active_account(json.loads(B.AK_FILE.read_text()))
+        account = B.active_account(json.loads(B.AK_FILE.read_text(encoding='utf-8')))
         self.assertEqual(account['aliyunAkId'], 'script-id')
         self.assertEqual(account['aliyunAkSecret'], 'script-secret')
         self.assertNotIn(b'script-secret', result.stdout + result.stderr)
